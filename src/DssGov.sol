@@ -59,6 +59,7 @@ contract DssGov {
     // Storage variables:
 
     mapping(address => uint256)                      public wards;               // Authorized addresses
+    mapping(address => uint256)                      public layerTwoDelegates;   // L2 delegates which need some added permissions
     uint256                                          public live;                // System liveness
     TokenLike                                        public govToken;            // MKR gov token
     uint256[]                                        public gasStorage;          // Gas storage reserve
@@ -125,6 +126,8 @@ contract DssGov {
     event Plot(uint256 indexed id);
     event Exec(uint256 indexed id);
     event Drop(uint256 indexed id);
+    event AddLayerTwoDelegate(address indexed usr);
+    event RemoveLayerTwoDelegate(address indexed usr);
 
 
     // Modifiers:
@@ -262,11 +265,26 @@ contract DssGov {
         emit RemoveProposer(usr);
     }
 
+    function addLayerTwoDelegate(address usr) external auth {
+        layerTwoDelegates[usr] = 1;
+
+        emit AddLayerTwoDelegate(usr);
+    }
+
+    function removeLayerTwoDelegate(address usr) external auth {
+        layerTwoDelegates[usr] = 0;
+
+        emit RemoveLayerTwoDelegate(usr);
+    }
+
     function delegate(address owner, address newDelegated) external warm {
         // Get actual delegated address
         address oldDelegated = delegates[owner];
         // Verify it is not trying to set again the actual address
         require(newDelegated != oldDelegated, "DssGov-already-delegated");
+
+        //If delegated to L2, L2 must call
+        require(layerTwoDelegates[oldDelegated] == 0 || oldDelegated == msg.sender , "DssGov/user-on-L2");
 
         // Verify if the user is authorized to execute this change in delegation
         require(
@@ -358,6 +376,8 @@ contract DssGov {
 
         // Get actual delegated address
         address delegated = delegates[msg.sender];
+        // Verify they are not delegated to L2
+        require(layerTwoDelegates[delegated] == 0, "DssGov/user-on-L2");
 
         // If there is some delegated address
         if (delegated != address(0)) {
