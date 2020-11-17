@@ -81,8 +81,8 @@ contract GovUser {
         gov.free(wad);
     }
 
-    function doDelegate(address owner, address to) public {
-        gov.delegate(owner, to);
+    function doDelegate(address owner, address to, bool callback) public {
+        gov.delegate(owner, to, callback);
     }
 
     function doPropose(address exec, address action) public returns (uint256 id) {
@@ -139,6 +139,25 @@ contract System {
     }
 }
 
+contract MockL2 {
+    address public gov;
+    mapping(address => uint256) public votes;
+
+    constructor(address _gov) public {
+        gov = _gov;
+    }
+
+    function addDelegation(address owner, uint256 amount) external {
+        require(msg.sender == gov, "");
+        votes[owner] += amount;
+    }
+
+    function delDelegation(address owner, uint256 amount) external {
+        require(msg.sender == gov, "");
+        votes[owner] -= amount;
+    }
+}
+
 contract DssGovTest is DSTest {
     uint256 constant user1InitialBalance = 350000 ether;
     uint256 constant user2InitialBalance = 250000 ether;
@@ -161,6 +180,8 @@ contract DssGovTest is DSTest {
     address action1;
     address action2;
     address action3;
+
+    MockL2 mockL2;
 
     uint256 actualBlock;
 
@@ -200,6 +221,8 @@ contract DssGovTest is DSTest {
         action1 = address(new ActionProposal(address(system)));
         action2 = address(new ActionProposal(address(system)));
         action3 = address(new ActionProposal(address(system)));
+
+        mockL2 = new MockL2(address(gov));
 
         govToken.transfer(address(user1), user1InitialBalance);
         govToken.transfer(address(user2), user2InitialBalance);
@@ -243,37 +266,37 @@ contract DssGovTest is DSTest {
         assertEq(gov.delegates(address(user1)), address(0));
         assertEq(gov.rights(address(user2)), 0);
         user1.doLock(user1InitialBalance);
-        user1.doDelegate(address(user1), address(user2));
+        user1.doDelegate(address(user1), address(user2), false);
         assertEq(gov.delegates(address(user1)), address(user2));
         assertEq(gov.rights(address(user2)), user1InitialBalance);
     }
 
     function test_remove_delegation_delegated() public {
-        user1.doDelegate(address(user1), address(user2));
-        user2.doDelegate(address(user1), address(0));
+        user1.doDelegate(address(user1), address(user2), false);
+        user2.doDelegate(address(user1), address(0), false);
     }
 
     function testFail_change_delegation_delegated() public {
-        user1.doDelegate(address(user1), address(user2));
-        user2.doDelegate(address(user1), address(1));
+        user1.doDelegate(address(user1), address(user2), false);
+        user2.doDelegate(address(user1), address(1), false);
     }
 
     function test_remove_delegation_inactivity() public {
-        user1.doDelegate(address(user1), address(user2));
+        user1.doDelegate(address(user1), address(user2), false);
         _warp(gov.delegationLifetime() / 15 + 1);
-        gov.delegate(address(user1), address(0));
+        gov.delegate(address(user1), address(0), false);
     }
 
     function testFail_remove_delegation_inactivity() public {
-        user1.doDelegate(address(user1), address(user2));
+        user1.doDelegate(address(user1), address(user2), false);
         _warp(gov.delegationLifetime() / 15 - 1);
-        gov.delegate(address(user1), address(0));
+        gov.delegate(address(user1), address(0), false);
     }
 
     function testFail_change_delegation_inactivity() public {
-        user1.doDelegate(address(user1), address(user2));
+        user1.doDelegate(address(user1), address(user2), false);
         _warp(gov.delegationLifetime() / 15 + 1);
-        user2.doDelegate(address(user1), address(1));
+        user2.doDelegate(address(user1), address(1), false);
     }
 
     function test_snapshot() public {
@@ -293,7 +316,7 @@ contract DssGovTest is DSTest {
         assertEq(rights, 0);
 
         _warp(1);
-        user1.doDelegate(address(user1), address(user1));
+        user1.doDelegate(address(user1), address(user1), false);
 
         num = gov.numSnapshots(address(user1));
         assertEq(gov.numSnapshots(address(user1)), 2);
@@ -304,7 +327,7 @@ contract DssGovTest is DSTest {
 
     function test_ping() public {
         user1.doLock(user1InitialBalance);
-        user1.doDelegate(address(user1), address(user1));
+        user1.doDelegate(address(user1), address(user1), false);
         assertEq(gov.active(address(user1)), 0);
         assertEq(gov.totActive(), 0);
         user1.doPing();
@@ -314,7 +337,7 @@ contract DssGovTest is DSTest {
 
     function test_clear() public {
         user1.doLock(user1InitialBalance);
-        user1.doDelegate(address(user1), address(user1));
+        user1.doDelegate(address(user1), address(user1), false);
         user1.doPing();
         assertEq(gov.active(address(user1)), 1);
         assertEq(gov.totActive(), user1InitialBalance);
@@ -336,17 +359,17 @@ contract DssGovTest is DSTest {
         user2.doLock(25000 ether);
         assertTrue(!_tryLaunch());
         user1.doPing();
-        user1.doDelegate(address(user1), address(user1));
+        user1.doDelegate(address(user1), address(user1), false);
         assertTrue(!_tryLaunch());
         user2.doPing();
-        user2.doDelegate(address(user2), address(user2));
+        user2.doDelegate(address(user2), address(user2), false);
         assertTrue(_tryLaunch());
     }
 
     function _launch() internal {
         user1.doLock(100000 ether);
         user1.doPing();
-        user1.doDelegate(address(user1), address(user1));
+        user1.doDelegate(address(user1), address(user1), false);
         gov.launch();
         user1.doFree(100000 ether);
     }
@@ -574,13 +597,13 @@ contract DssGovTest is DSTest {
         assertEq(gov.gasOwners(address(user1), "owner"), 0);
         assertEq(gov.gasOwners(address(user3), "owner"), 0);
         assertEq(gov.gasStorageLength(), 0);
-        user1.doDelegate(address(user1), address(user1));
+        user1.doDelegate(address(user1), address(user1), false);
         assertEq(gov.gasOwners(address(user1), "owner"), 50);
         assertEq(gov.gasStorageLength(), 50);
-        user2.doDelegate(address(user2), address(user2));
+        user2.doDelegate(address(user2), address(user2), false);
         assertEq(gov.gasOwners(address(user2), "owner"), 50);
         assertEq(gov.gasStorageLength(), 100);
-        user3.doDelegate(address(user3), address(user3));
+        user3.doDelegate(address(user3), address(user3), false);
         assertEq(gov.gasOwners(address(user3), "owner"), 50);
         assertEq(gov.gasStorageLength(), 150);
 
@@ -590,14 +613,14 @@ contract DssGovTest is DSTest {
     }
 
     function test_burn_delegation() public {
-        user1.doDelegate(address(user1), address(user1));
-        user2.doDelegate(address(user2), address(user2));
-        user3.doDelegate(address(user3), address(user3));
+        user1.doDelegate(address(user1), address(user1), false);
+        user2.doDelegate(address(user2), address(user2), false);
+        user3.doDelegate(address(user3), address(user3), false);
         assertEq(gov.gasStorageLength(), 150);
         _warp(gov.delegationLifetime() / 15 + 1);
 
         assertEq(gov.gasOwners(address(user3), "owner"), 50);
-        gov.delegate(address(user3), address(0));
+        gov.delegate(address(user3), address(0), false);
         assertEq(gov.gasOwners(address(user3), "owner"), 0);
         assertEq(gov.gasStorageLength(), 100);
 
@@ -660,5 +683,18 @@ contract DssGovTest is DSTest {
         user3.doPropose(exec12, action1);
         user3.doPropose(exec12, action1);
         user3.doPropose(exec12, action1);
+    }
+
+    function test_delegation_callback() public {
+        user1.doLock(10);
+        assertEq(mockL2.votes(address(user1)), 0);
+        user1.doDelegate(address(user1), address(mockL2), true);
+        assertEq(mockL2.votes(address(user1)), 10);
+        user1.doLock(10);
+        assertEq(mockL2.votes(address(user1)), 20);
+        user1.doFree(2);
+        assertEq(mockL2.votes(address(user1)), 18);
+        user1.doDelegate(address(user1), address(0), false);
+        assertEq(mockL2.votes(address(user1)), 0);
     }
 }

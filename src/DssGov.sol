@@ -76,6 +76,7 @@ contract DssGov {
     mapping(uint256 => Proposal)                     public proposals;           // Proposal Id => Proposal Info
     mapping(address => uint256)                      public numSnapshots;        // User => Amount of snapshots
     mapping(address => mapping(uint256 => Snapshot)) public snapshots;           // User => Index => Snapshot
+    mapping(address => mapping(address => uint256))  public useCallback;         // Owner => Delegated => 1 if implements callback, otherwise 0
     // Admin params
     uint256                                          public rightsLifetime;      // Delegated rights lifetime without activity of the delegated
     uint256                                          public delegationLifetime;  // Lifetime of delegation without activity of the MKR owner
@@ -194,6 +195,14 @@ contract DssGov {
         amount = snapshot.rights;
     }
 
+    function _addDelegationCallback(address delegated, address owner, uint256 amount) internal returns (bool ok) {
+        (ok,) = delegated.call(abi.encodeWithSignature("addDelegation(address,uint256)", owner, amount));
+    }
+
+    function _delDelegationCallback(address delegated, address owner, uint256 amount) internal returns (bool ok) {
+        (ok,) = delegated.call(abi.encodeWithSignature("delDelegation(address,uint256)", owner, amount));
+    }
+
 
     // Constructor:
 
@@ -262,7 +271,7 @@ contract DssGov {
         emit RemoveProposer(usr);
     }
 
-    function delegate(address owner, address newDelegated) external warm {
+    function delegate(address owner, address newDelegated, bool callback) external warm {
         // Get actual delegated address
         address oldDelegated = delegates[owner];
         // Verify it is not trying to set again the actual address
@@ -295,32 +304,50 @@ contract DssGov {
             emit UpdateTotalActive(totActive);
         }
 
-        // If already existed a delegated address
-        if (oldDelegated != address(0)) {
-            // Remove owner's voting rights from old delegate
-            rights[oldDelegated] = _sub(rights[oldDelegated], deposit);
-            // If active, save snapshot
-            if(activeOld) {
-                _save(oldDelegated, rights[oldDelegated]);
-            }
-        } else {
-            _mint("owner", owner);
-        }
+        // Emit event
+        emit Delegate(owner, newDelegated);
 
         // If setting to some delegated address
         if (newDelegated != address(0)) {
             // Add owner's voting rights to those of the new delegate
             rights[newDelegated] = _add(rights[newDelegated], deposit);
+
             // If active, save snapshot
             if(activeNew) {
                 _save(newDelegated, rights[newDelegated]);
+            }
+
+            // Process callback if corresponds
+            if (callback) {
+                // It enforces the callback succeeds
+                require(_addDelegationCallback(newDelegated, owner, deposit), "DssGov/add-delegation-callback-failed");
+                // Marks this delegation address is using a callback for this owner
+                useCallback[owner][newDelegated] = 1;
             }
         } else {
             _burn("owner", owner);
         }
 
-        // Emit event
-        emit Delegate(owner, newDelegated);
+        // If already existed a delegated address
+        if (oldDelegated != address(0)) {
+            // Remove owner's voting rights from old delegate
+            rights[oldDelegated] = _sub(rights[oldDelegated], deposit);
+
+            // If active, save snapshot
+            if(activeOld) {
+                _save(oldDelegated, rights[oldDelegated]);
+            }
+
+            // Process callback if corresponds
+            if (useCallback[owner][oldDelegated] == 1) {
+                // In this case it doesn't enforce that the callback succeeds as otherwise the undelegation might get stuck
+                // It's up to the called contract to ensure this function exists and works correctly
+                useCallback[owner][oldDelegated] = 0;
+                _delDelegationCallback(oldDelegated, owner, deposit);
+            }
+        } else {
+            _mint("owner", owner);
+        }
     }
 
     function lock(uint256 wad) external warm {
@@ -339,9 +366,15 @@ contract DssGov {
             if (active[delegated] == 1) {
                 // Save user's snapshot
                 _save(delegated, rights[delegated]);
+
                 // Update total active and emit event
                 totActive = _add(totActive, wad);
                 emit UpdateTotalActive(totActive);
+            }
+
+            // Use callback if corresponds
+            if (useCallback[msg.sender][delegated] == 1) {
+                require(_addDelegationCallback(delegated, msg.sender, wad), "DssGov/add-delegation-callback-failed");
             }
         }
 
@@ -365,9 +398,15 @@ contract DssGov {
             if (active[delegated] == 1) {
                 // Save user's snapshot
                 _save(delegated, rights[delegated]);
+
                 // Update total active and emit event
                 totActive = _sub(totActive, wad);
                 emit UpdateTotalActive(totActive);
+            }
+
+            // Use callback if corresponds
+            if (useCallback[msg.sender][delegated] == 1) {
+                require(_delDelegationCallback(delegated, msg.sender, wad), "DssGov/del-delegation-callback-failed");
             }
         }
 
